@@ -1,0 +1,326 @@
+#
+#  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#  SPDX-License-Identifier: MIT-0
+# 
+#  Permission is hereby granted, free of charge, to any person obtaining a
+#  copy of this software and associated documentation files (the "Software"),
+#  to deal in the Software without restriction, including without limitation
+#  the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#  and/or sell copies of the Software, and to permit persons to whom the
+#  Software is furnished to do so. 
+# 
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE. 
+# 
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+
+  Creates a demo VPC and two private subnets, a multicast-enabled transit
+  gateway, and some instances that can be used to demonstrate multicast
+  operations.
+
+Parameters:
+  MCastCidr:
+    Description: Please input a CIDR block that will be used for the demo VPC. This will be sub-divided into two private subnets and should be at least a /26.
+    Type: String
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+    Default: "10.0.65.0/26" 
+
+  MCastUserData:
+    Description: On each instance we install the avahi-tools packages and persistently configure the kernel to use IGMPv2 rather than defaulting to v3. DO NOT MAKE ANY CHANGES HERE.
+    Type: String
+    Default: |
+      #!/bin/bash -xe 
+      # Install Avahi DNS-SD package; 
+      yum install -y avahi-tools;
+      cat >/etc/sysctl.d/99-igmpv2.conf <<EOF;
+      # Force kernel to use IGMP v2 rather than default to v3
+      net.ipv4.conf.all.force_igmp_version=2
+      net.ipv4.conf.eth0.force_igmp_version=2
+      EOF
+      sysctl -p /etc/sysctl.d/99-igmpv2.conf;
+
+  LatestAmiId:
+    Description: The AWS Systems Manager Parameter Store key for the latest Amazon Linux 2 AMI ID. Only change this parameter if you wish to evaluate behaviour with an alternative Linux distribution.
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+
+Resources:
+    MCastVPC:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: !Ref 'MCastCidr'
+        InstanceTenancy: default
+        EnableDnsSupport: 'true'
+        EnableDnsHostnames: 'true'
+
+    MCastSubnetPrivateA:
+      Type: AWS::EC2::Subnet
+      Properties:
+        CidrBlock: !Select [ 1, !Cidr [ !GetAtt MCastVPC.CidrBlock, 4, 4 ]]
+        AvailabilityZone: !Select
+          - 0
+          - Fn::GetAZs: !Ref 'AWS::Region'
+        VpcId: !Ref 'MCastVPC'
+        Tags:
+          - Key: Name
+            Value: 'Multicast test private subnet A'
+
+    MCastSubnetPrivateB:
+      Type: AWS::EC2::Subnet
+      Properties:
+        CidrBlock: !Select [ 2, !Cidr [ !GetAtt MCastVPC.CidrBlock, 4, 4 ]]
+        AvailabilityZone:  !Select
+          - 1
+          - Fn::GetAZs: !Ref 'AWS::Region'
+        VpcId: !Ref 'MCastVPC'
+        Tags:
+          - Key: Name
+            Value: 'Multicast test private subnet B'
+
+    # Security group allows:
+    #   HTTPS to enable Session Manager to connect to instances
+    #   UDP port 5353 for DNS-SD
+    #   IP protocol 2 (IGMP) from the VPC and from the TGW (0.0.0.0/32)
+
+    MCastSG:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Multicast demo application access security group
+        VpcId: !Ref 'MCastVPC'
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref 'MCastCidr'
+        - IpProtocol: udp
+          FromPort: 5353
+          ToPort: 5353
+          CidrIp: !Ref 'MCastCidr'
+        - IpProtocol: 2
+          CidrIp: !Ref 'MCastCidr'
+        - IpProtocol: 2
+          CidrIp: 0.0.0.0/32
+        Tags:
+          - Key: Name
+            Value: 'Multicast test security group'
+
+    # Service endpoints to allow connections from Session Manager
+
+    MCastSSMEndpoint:
+      Type: AWS::EC2::VPCEndpoint
+      DependsOn: MCastSG
+      DependsOn: MCastSubnetPrivateA
+      DependsOn: MCastSubnetPrivateB
+      Properties:
+        PrivateDnsEnabled: 'true'
+        SecurityGroupIds: [!Ref 'MCastSG']
+        SubnetIds: [!Ref 'MCastSubnetPrivateA', !Ref 'MCastSubnetPrivateB'] 
+        ServiceName: !Join
+          - ''
+          - - 'com.amazonaws.'
+            - !Ref AWS::Region
+            - '.ssm'
+        VpcEndpointType: Interface
+        VpcId: !Ref 'MCastVPC'
+
+    MCastSSMMessagesEndpoint:
+      Type: AWS::EC2::VPCEndpoint
+      DependsOn: MCastSG
+      DependsOn: MCastSubnetPrivateA
+      DependsOn: MCastSubnetPrivateB
+      Properties:
+        PrivateDnsEnabled: 'true'
+        SecurityGroupIds: [!Ref 'MCastSG']
+        SubnetIds: [!Ref 'MCastSubnetPrivateA', !Ref 'MCastSubnetPrivateB']
+        ServiceName: !Join
+          - ''
+          - - 'com.amazonaws.'
+            - !Ref AWS::Region
+            - '.ssmmessages'
+        VpcEndpointType: Interface
+        VpcId: !Ref 'MCastVPC'
+
+    MCastEC2MessagesEndpoint:
+      Type: AWS::EC2::VPCEndpoint
+      DependsOn: MCastSG
+      DependsOn: MCastSubnetPrivateA
+      DependsOn: MCastSubnetPrivateB
+      Properties:
+        PrivateDnsEnabled: 'true'
+        SecurityGroupIds: [!Ref 'MCastSG']
+        SubnetIds: [!Ref 'MCastSubnetPrivateA', !Ref 'MCastSubnetPrivateB']
+        ServiceName: !Join
+          - ''
+          - - 'com.amazonaws.'
+            - !Ref AWS::Region
+            - '.ec2messages'
+        VpcEndpointType: Interface
+        VpcId: !Ref 'MCastVPC'
+
+    MCastS3Endpoint:
+      Type: AWS::EC2::VPCEndpoint
+      DependsOn: MCastRouteTablePrivate
+      Properties:
+        ServiceName: !Join
+          - ''
+          - - 'com.amazonaws.'
+            - !Ref AWS::Region
+            - '.s3'
+        VpcId: !Ref 'MCastVPC'
+        RouteTableIds: 
+          - !Ref 'MCastRouteTablePrivate'
+
+    MCastRouteTablePrivate:
+      Type: AWS::EC2::RouteTable
+      Properties:
+        VpcId: !Ref 'MCastVPC'
+
+    # This role allows connections from Session Manager and fetches
+    # from the yum repositories. 
+
+    MCastInstanceRole:
+        Type: AWS::IAM::Role
+        Properties:
+          ManagedPolicyArns: 
+            - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+            - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+          AssumeRolePolicyDocument:
+            Statement:
+             - Effect: Allow
+               Principal:
+                 Service: [ ec2.amazonaws.com ]
+               Action:
+                 - sts:AssumeRole
+          Policies:
+            - PolicyName: s3-repository-access-policy
+              PolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                  - Effect: Allow
+                    Action: 
+                      - 's3:GetObject'
+                    Resource:
+                      - !Join [ '.', [ 'arn:aws:s3:::packages', !Ref AWS::Region, 'amazonaws.com/*' ] ]
+                      - !Join [ '.', [ 'arn:aws:s3:::repo', !Ref AWS::Region, 'amazonaws.com/*' ] ]
+                      - !Join [ '.', [ 'arn:aws:s3:::amazonlinux', !Ref AWS::Region, 'amazonaws.com/*' ] ] 
+              
+
+    MCastInstanceProfile:
+        Type: AWS::IAM::InstanceProfile
+        DependsOn: MCastInstanceRole
+        Properties:
+          InstanceProfileName: !Join
+            - '-'
+            - - 'mcast-instance-profile'
+              - !Ref AWS::Region
+          Roles: [ !Ref MCastInstanceRole ]
+
+    # Test instances
+
+    MCastInstance1:
+      Type: AWS::EC2::Instance
+      DependsOn: MCastInstanceProfile
+      DependsOn: MCastS3Endpoint # to do its yum install
+      Properties:
+        IamInstanceProfile: !Ref MCastInstanceProfile
+        ImageId: !Ref LatestAmiId
+        AvailabilityZone: !Select
+          - 0
+          - Fn::GetAZs: !Ref 'AWS::Region'
+        InstanceType: t3.nano
+        UserData: 
+          Fn::Base64: !Sub |
+                  ${MCastUserData}
+        NetworkInterfaces:
+         - DeviceIndex: 0
+           SubnetId: !Ref 'MCastSubnetPrivateA'
+           GroupSet: [!Ref 'MCastSG']
+        Tags:
+          - Key: Name
+            Value: 'Multicast test instance 1'
+
+    MCastInstance2:
+      Type: AWS::EC2::Instance
+      DependsOn: MCastInstanceProfile
+      DependsOn: MCastS3Endpoint # to do its yum install
+      Properties:
+        IamInstanceProfile: !Ref MCastInstanceProfile
+        ImageId: !Ref LatestAmiId
+        AvailabilityZone: !Select
+          - 0
+          - Fn::GetAZs: !Ref 'AWS::Region'
+        InstanceType: t3.nano
+        UserData: 
+          Fn::Base64: !Sub |
+                  ${MCastUserData}
+        NetworkInterfaces:
+         - DeviceIndex: 0
+           SubnetId: !Ref 'MCastSubnetPrivateA'
+           GroupSet: [!Ref 'MCastSG']
+        Tags:
+          - Key: Name
+            Value: 'Multicast test instance 2'
+
+    MCastInstance3:
+      Type: AWS::EC2::Instance
+      DependsOn: MCastInstanceProfile
+      DependsOn: MCastS3Endpoint # to do its yum install
+      Properties:
+        IamInstanceProfile: !Ref MCastInstanceProfile
+        ImageId: !Ref LatestAmiId
+        AvailabilityZone:  !Select
+          - 1
+          - Fn::GetAZs: !Ref 'AWS::Region'
+        InstanceType: t3.nano
+        UserData: 
+          Fn::Base64: !Sub |
+                  ${MCastUserData}
+        NetworkInterfaces:
+         - DeviceIndex: 0
+           SubnetId: !Ref 'MCastSubnetPrivateB'
+           GroupSet: [!Ref 'MCastSG']
+        Tags:
+          - Key: Name
+            Value: 'Multicast test instance 3'
+
+    MCastSubnetAPrivateRouteAssociation:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        RouteTableId: !Ref 'MCastRouteTablePrivate'
+        SubnetId: !Ref 'MCastSubnetPrivateA'
+
+    MCastSubnetBPrivateRouteAssociation:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        RouteTableId: !Ref 'MCastRouteTablePrivate'
+        SubnetId: !Ref 'MCastSubnetPrivateB'
+
+    # Transit Gateway setup
+
+    MCastTGW:
+      Type: AWS::EC2::TransitGateway
+      Properties:
+        AutoAcceptSharedAttachments: 'disable'
+        MulticastSupport: 'enable'
+        Tags:
+          - Key: Name
+            Value: 'Multicast test Transit Gateway'
+
+    MCastTGWAttachment:
+      Type: AWS::EC2::TransitGatewayAttachment
+      Properties:
+        SubnetIds: [!Ref 'MCastSubnetPrivateA', !Ref 'MCastSubnetPrivateB']
+        TransitGatewayId: !Ref 'MCastTGW'
+        VpcId: !Ref 'MCastVPC'
+        Tags:
+          - Key: Name
+            Value: 'Multicast test Transit Gateway attachment'
+
