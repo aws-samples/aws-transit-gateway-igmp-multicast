@@ -1,8 +1,4 @@
-## My Project
-
-TODO: Fill this README out!
-
-Be sure to:
+## AWS Transit Gatewat IGMP Multicast
 
 * Change the title in this README
 * Edit your repository description on GitHub
