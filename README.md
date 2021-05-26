@@ -1,7 +1,7 @@
 ## AWS Transit Gatewat IGMP Multicast
 
-* Change the title in this README
-* Edit your repository description on GitHub
+The AWS CloudFormation template in this repository, multicast.yaml, builds a simple architecture in AWS as shown in the diagram below. <img src="multicast-diag.png">
+
 
 ## Security
 
