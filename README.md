@@ -4,6 +4,9 @@ The [AWS CloudFormation](http://aws.amazon.com/cloudformation/) template in this
 
 <img src="multicast-diag.png">
 
+### Update 2021-08-26
+
+CloudFormation now [documents](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-transitgatewaymulticastdomain.html) the `igmpv2Support` option to the `AWS::EC2::TransitGatewayMulticastDomain` resource type. The template [multicast-v2.yaml](multicast-v2.yaml) uses this to automate completely the creation of the architecture. If you launch this version of the stack, you can skip ahead to the section [**Demonstrating multicast operation** in the blog](https://aws.amazon.com/blogs/networking-and-content-delivery/automating-service-discovery-using-aws-transit-gateway-multicast-with-igmp/).
 
 ## Security
 
